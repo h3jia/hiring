@@ -53,5 +53,5 @@ setup(
     url='https://github.com/h3jia/hiring',
     license='Apache License, Version 2.0',
     python_requires=">=3.7",
-    install_requires=['numpy>=1.17', 'scipy'],
+    install_requires=['jax>=0.3', 'numpy>=1.17', 'scipy'],
 )
