@@ -3,6 +3,7 @@ import jax.numpy as jnp
 from collections import OrderedDict
 from .lensing_bands import *
 from copy import deepcopy
+from scipy.ndimage import uniform_filter
 #from time import time #####
 
 __all__ = ['BandAllocation']
@@ -150,9 +151,9 @@ class BandAllocation:
             merged[k] = np.concatenate([_[k] for _ in output_list])
         return merged
 
-    def read_image(self, path, target='I_nu'):
+    def read_image(self, path, target='I_nu', interp='nearest'):
         #t0 = time() #####
-        self.layer_image_raw = [np.full((_r, _r), -1.) for _r in self.layer_resolution]
+        self.layer_image_raw = [np.full((_r, _r), -1e8) for _r in self.layer_resolution]
         #print(1, time() - t0) #####
         result = np.nan_to_num(np.load(path)[target]) if isinstance(path, str) else path
         #print(2, time() - t0) #####
@@ -166,10 +167,29 @@ class BandAllocation:
                                      np.ones((self.image_resolution // self.layer_resolution[i],
                                               self.image_resolution // self.layer_resolution[i])))
                             for i in range(self.n_layer)]
+        if interp == 'nearest':
+            pass
+        elif interp == 'linear':
+            for i in range(1):
+                #print(31, time() - t0, self.image_resolution, self.layer_resolution[i]) #####
+                assert self.image_resolution // self.layer_resolution[i] > 1
+                self.layer_image[i] = uniform_filter(
+                    self.layer_image[i], self.image_resolution // self.layer_resolution[i],
+                    mode='nearest'
+                )
+            for i in range(1, self.n_layer - 1):
+                #print(32, time() - t0, self.image_resolution, self.layer_resolution[i]) #####
+                assert self.image_resolution // self.layer_resolution[i] > 1
+                self.layer_image[i] = uniform_filter(
+                    self.layer_image[i], self.image_resolution // self.layer_resolution[i],
+                    mode='constant', cval=-1e8
+                )
+        else:
+            raise NotImplementedError
         #print(4, time() - t0) #####
         self.total_image = self.layer_image[-1]
         for img in self.layer_image[::-1][1:]:
             self.total_image = np.where(self.total_image >= 0., self.total_image, img)
-        assert np.all(self.total_image >= 0.)
+        assert np.all(self.total_image >= -0.01)
         #print(5, time() - t0) #####
-        return self.total_image
+        return np.clip(self.total_image, 0., np.inf)
