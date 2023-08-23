@@ -5,6 +5,7 @@ from numpy.lib.scimath import sqrt
 from scipy.optimize import root_scalar
 from scipy.optimize import minimize_scalar
 from scipy.special import ellipk, ellipkinc
+import warnings
 
 
 __all__ = ['r_c', 'd_c', 'r_proj', 'd_proj', 'r_b']
@@ -38,29 +39,34 @@ def r_c(phi, spin, theta_o, deg=True, target='r'):
     r_0 = r_m - 0.01 * (r_p - r_m)
     r_1 = r_p + 0.01 * (r_p - r_m)
     _r_c = root_scalar(_r_c_fun, bracket=[r_0, r_1], args=(phi, spin, theta_o, 'phi'))
-    assert _r_c.converged
+    if not _r_c.converged:
+        warnings.warn('root_scalar may be not converged.', RuntimeWarning)
     return _r_c_fun(_r_c.root, phi, spin, theta_o, target)
 
 
 def d_c(phi, spin, theta_o, deg=True):
     foo = 180 if deg else np.pi
+    phi %= foo
     return r_c(phi, spin, theta_o, deg) + r_c(foo - phi, spin, theta_o, deg)
 
 
 def r_proj(phi, spin, theta_o, deg=True):
     phi_p = 180 if deg else np.pi
     assert 0 <= phi <= phi_p
+    # phi %= phi_p
     def foo(p, phi):
         x, y = r_c(p, spin, theta_o, deg, 'xy')
         phi = phi * np.pi / 180 if deg else phi
         return -(x * np.cos(phi) + y * np.sin(phi))
     o_c = minimize_scalar(foo, bracket=[0, phi_p], bounds=[0, phi_p], method='bounded', args=(phi,))
-    assert o_c.success
+    if not o_c.success:
+        warnings.warn('minimize_scalar may be not converged.', RuntimeWarning)
     return r_c(o_c.x, spin, theta_o, deg, 'r')
 
 
 def d_proj(phi, spin, theta_o, deg=True):
     foo = 180 if deg else np.pi
+    phi %= foo
     return r_proj(phi, spin, theta_o, deg) + r_proj(foo - phi, spin, theta_o, deg)
 
 
@@ -145,6 +151,13 @@ def r_b(phi, spin, theta_o, theta_d, n, deg=True):
         phi = phi * np.pi / 180
         theta_o = theta_o * np.pi / 180
         theta_d = theta_d * np.pi / 180
+    phi %= (2 * np.pi)
+    if abs(phi - 0.) < 2e-5:
+        phi = 2e-5
+    elif abs(phi - np.pi) < 2e-5:
+        phi = np.pi - 2e-5
+    elif abs(phi - 2 * np.pi) < 2e-5:
+        phi = 2 * np.pi - 2e-5
     _r_c = r_c(phi, spin, theta_o, deg=False)
     r_i = root_scalar(_r_b_fun, bracket=[0.3, 0.999], args=(_r_c, phi, spin, theta_o, theta_d, n))
     assert r_i.converged

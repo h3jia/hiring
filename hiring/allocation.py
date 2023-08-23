@@ -1,195 +1,185 @@
 import numpy as np
-import jax.numpy as jnp
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
+import pickle
 from .lensing_bands import *
-from copy import deepcopy
-from scipy.ndimage import uniform_filter
-#from time import time #####
+from ._allocation import _set_mask, _merge_layers, _zoom_layers
 
-__all__ = ['BandAllocation']
+__all__ = ['LayerConfig', 'PixelConfig', 'get_lensing_band_layer', 'get_square_layer',
+           'merge_configs', 'save_configs', 'load_layers', 'load_pixels', 'load_image']
 
 
-class BandAllocation:
-    def __init__(self, base_resolution=512, camera_width=24., resolution_boost=[3, 3], spin=0.9375,
-                 theta_o=163, theta_d=90, n_phi=1000, max_pixels_per_run=600000, band_config=None):
-        #t0 = time() #####
-        if band_config is not None:
-            self._band_config = OrderedDict(np.load(band_config))
-        else:
-            self._band_config = OrderedDict()
-            self.band_config['base_resolution'] = int(base_resolution)
-            assert self.band_config['base_resolution'] > 0
-            self.band_config['camera_width'] = float(camera_width)
-            assert self.band_config['camera_width'] > 0
-            self.band_config['resolution_boost'] = np.array(resolution_boost).astype(int).flatten()
-            assert np.all(self.band_config['resolution_boost'] > 1)
-            assert self.band_config['resolution_boost'].size >= 1
-            self.band_config['spin'] = float(spin)
-            assert 0. <= self.band_config['spin'] <= 1.
-            self.band_config['theta_o'] = float(theta_o)
-            assert 0. <= self.band_config['theta_o'] <= 180.
-            self.band_config['theta_d'] = float(theta_d)
-            assert 0. <= self.band_config['theta_d'] <= 180.
-            self.band_config['n_phi'] = int(n_phi)
-            assert self.band_config['n_phi'] > 0
+LayerConfig = namedtuple('LayerConfig', ['padding_resolution', 'central_resolution', 'ij'])
 
-        #print(1, time() - t0) #####
-        self.layer_x = [self.get_x(self.band_config['camera_width'], _) for _ in
-                        self.layer_resolution]
-        self.layer_xy = [np.meshgrid(_, _) for _ in self.layer_x]
-        self.phi_all = np.linspace(0.001, 359.999, self.band_config['n_phi'])
 
-        #print(2, time() - t0) #####
-        if band_config is None:
-            self.band_config['r_band'] = np.moveaxis(
-                [[r_b(j, self.band_config['spin'], self.band_config['theta_o'],
-                self.band_config['theta_d'], i) for j in self.phi_all] for i in
-                range(1, self.n_layer)], 1, 2) # n_band, 2, n_phi
-            for i in range(1, self.n_layer):
-                #print(21, time() - t0) #####
-                layer_r = jnp.sqrt(self.layer_xy[i][0]**2 + self.layer_xy[i][1]**2)
-                layer_phi = jnp.arctan2(self.layer_xy[i][1], self.layer_xy[i][0]) % (2 * jnp.pi)
-                layer_phi *= 180 / jnp.pi
-                #print(22, time() - t0) #####
-                self.band_config[f'layer_{i}'] = np.array(np.where(jnp.logical_and(
-                    layer_r >= jnp.interp(layer_phi, self.phi_all,
-                                          self.band_config['r_band'][i - 1, 0], period=360.),
-                    layer_r <= jnp.interp(layer_phi, self.phi_all,
-                                          self.band_config['r_band'][i - 1, 1], period=360.)
-                )))
-                #print(23, time() - t0) #####
-                del layer_r, layer_phi
-            self.band_config['x_all'] = self.layer_xy[0][0].flatten()
-            self.band_config['y_all'] = self.layer_xy[0][1].flatten()
-            for i in range(1, self.n_layer):
-                self.band_config['x_all'] = np.concatenate((
-                    self.band_config['x_all'],
-                    self.layer_xy[i][0][tuple(self.band_config[f'layer_{i}'])]
-                ))
-                self.band_config['y_all'] = np.concatenate((
-                    self.band_config['y_all'],
-                    self.layer_xy[i][1][tuple(self.band_config[f'layer_{i}'])]
-                ))
-        #print(3, time() - t0) #####
-        self.layer_n = np.array([self.band_config['base_resolution']**2] +
-                                [self.band_config[f'layer_{i}'].shape[-1] for i in
-                                 range(1, self.n_layer)])
-        self.layer_cumn = np.cumsum(np.insert(self.layer_n, 0, 0))
-        if band_config is None:
-            self.max_pixels_per_run = int(max_pixels_per_run)
-        else:
-            self.max_pixels_per_run = self.band_config['max_pixels_per_run']
-        #print(4, time() - t0) #####
+PixelConfig = namedtuple('PixelConfig', ['camera_width', 'x_all', 'y_all'])
 
-    @property
-    def band_config(self):
-        return self._band_config
 
-    @property
-    def layer_resolution(self):
-        return self.band_config['base_resolution'] * np.cumprod(
-            np.insert(self.band_config['resolution_boost'], 0, 1))
+def get_lensing_band_layer(camera_width, layer_resolution, n, outer_width=None, spin=0.9375,
+                           theta_o=163., theta_d=90., n_phi=1000, f_exp=3.):
+    camera_width = float(camera_width)
+    assert camera_width > 0
+    layer_resolution = int(layer_resolution)
+    assert layer_resolution > 0
+    if outer_width is not None:
+        outer_width = float(outer_width)
+        assert 0 < outer_width <= camera_width
+        central_width = outer_width
+    else:
+        central_width = camera_width
+    central_resolution = int(layer_resolution * central_width / camera_width)
+    padding_resolution = (layer_resolution - central_resolution) // 2
+    padding_resolution = int(max(0, np.floor(padding_resolution - f_exp)))
+    central_resolution = layer_resolution - 2 * padding_resolution
+    central_width = camera_width * central_resolution / layer_resolution
 
-    @property
-    def image_resolution(self):
-        return self.layer_resolution[-1]
+    dx = central_width / central_resolution
+    _x_1d_all = np.arange(-central_width / 2 + dx / 2, central_width / 2 + dx / 2.01, dx)
+    _x_all, _y_all = np.meshgrid(_x_1d_all, _x_1d_all)
 
-    @property
-    def n_layer(self):
-        return self.band_config['resolution_boost'].size + 1
+    _mask = np.full_like(_x_all, 0, dtype=np.int8)
+    phi_all = np.linspace(0., 360., n_phi)
+    r_all = np.array([r_b(p, spin, theta_o, theta_d, n) for p in phi_all])
+    r_in_all = r_all[:, 0].copy() - f_exp * dx
+    r_out_all = r_all[:, 1].copy() + f_exp * dx
+    _set_mask(_mask, _x_all, _y_all, r_in_all, r_out_all, _x_all.shape[0], _x_all.shape[1],
+              n_phi, 1)
+    mask = np.where(_mask)
 
-    @property
-    def max_pixels_per_run(self):
-        return self.band_config['max_pixels_per_run']
+    x_all = _x_all[mask]
+    y_all = _y_all[mask]
+    layer_config = LayerConfig(padding_resolution=padding_resolution,
+                               central_resolution=central_resolution, ij=mask)
+    return layer_config, camera_width, x_all, y_all
 
-    @max_pixels_per_run.setter
-    def max_pixels_per_run(self, m):
-        self.band_config['max_pixels_per_run'] = int(m)
-        if self.band_config['max_pixels_per_run'] > 0:
-            self.band_config['n_run'] = int(np.ceil(self.band_config['x_all'].size /
-                                                    self.band_config['max_pixels_per_run']))
-        else:
-            self.band_config['n_run'] = 1
 
-    @staticmethod
-    def get_x(camera_width, resolution):
-        dx = camera_width / resolution
-        return np.arange(-camera_width / 2 + dx / 2, camera_width / 2 + dx / 2, dx)
+def get_square_layer(camera_width, layer_resolution, inner_width=None, outer_width=None,
+                     remove_lensing_band=True, spin=0.9375, theta_o=163., theta_d=90.,
+                     n_phi=1000, f_exp=3.):
+    camera_width = float(camera_width)
+    assert camera_width > 0
+    layer_resolution = int(layer_resolution)
+    assert layer_resolution > 0
+    if outer_width is not None:
+        outer_width = float(outer_width)
+        assert 0 < outer_width <= camera_width
+        central_width = outer_width
+    else:
+        central_width = camera_width
+    central_resolution = int(layer_resolution * central_width / camera_width)
+    padding_resolution = (layer_resolution - central_resolution) // 2
+    padding_resolution = int(max(0, np.floor(padding_resolution - f_exp)))
+    central_resolution = layer_resolution - 2 * padding_resolution
+    central_width = camera_width * central_resolution / layer_resolution
+    if central_resolution % 2:
+        raise NotImplementedError(
+            f'central_resolution should be even, instead of {central_resolution}')
 
-    def split_config(self):
-        all_config = []
-        if self.band_config['n_run'] > 1:
-            for i in range(self.band_config['n_run']):
-                _band_config = deepcopy(self.band_config)
-                _band_config['x_all'] = _band_config['x_all'][
-                    (i * _band_config['max_pixels_per_run']):
-                    ((i + 1) * _band_config['max_pixels_per_run'])]
-                _band_config['y_all'] = _band_config['y_all'][
-                    (i * _band_config['max_pixels_per_run']):
-                    ((i + 1) * _band_config['max_pixels_per_run'])]
-                all_config.append(_band_config)
-        else:
-            all_config.append(self.band_config)
-        return all_config
+    dx = central_width / central_resolution
+    _x_1d_all = np.arange(-central_width / 2 + dx / 2, central_width / 2 + dx / 2.01, dx)
+    _x_all, _y_all = np.meshgrid(_x_1d_all, _x_1d_all)
 
-    def save_config(self, path, split=True):
-        np.savez(path, **self.band_config)
-        if split and self.band_config['n_run'] > 1:
-            all_config = self.split_config()
-            for i, c in enumerate(all_config):
-                with open(path + f'.{i}', 'wb') as _f:
-                    np.savez(_f, **c) # avoid duplicate npz extensions
+    _mask = np.full_like(_x_all, 1, dtype=np.int8)
+    if inner_width is not None:
+        inner_width = float(inner_width)
+        assert 0 < inner_width < central_width
+        inner_resolution = int(
+            max(0, np.floor(central_resolution * inner_width / central_width - 2 * f_exp)))
+        band_resolution = (central_resolution - inner_resolution) // 2
+        inner_resolution = central_resolution - 2 * band_resolution
+        _mask[band_resolution:(-band_resolution), band_resolution:(-band_resolution)] = 0
+    if remove_lensing_band:
+        phi_all = np.linspace(0., 360., n_phi)
+        r_all = np.array([r_b(p, spin, theta_o, theta_d, 1) for p in phi_all])
+        r_in_all = r_all[:, 0].copy() + f_exp * dx
+        r_out_all = r_all[:, 1].copy() - f_exp * dx
+        _set_mask(_mask, _x_all, _y_all, r_in_all, r_out_all, _x_all.shape[0], _x_all.shape[1],
+                  n_phi, 0)
+    mask = np.where(_mask)
 
-    @staticmethod
-    def merge_output(output_list):
-        output_list = [np.load(_) for _ in output_list]
-        merged = OrderedDict()
-        shared_keys = ['mass_msun', 'width', 'frequency', 'adaptive_num_levels']
-        for k in shared_keys:
-            merged[k] = output_list[0][k]
-        for k in (set(output_list[0].keys()) - set(shared_keys)):
-            merged[k] = np.concatenate([_[k] for _ in output_list])
-        return merged
+    x_all = _x_all[mask]
+    y_all = _y_all[mask]
+    layer_config = LayerConfig(padding_resolution=padding_resolution,
+                               central_resolution=central_resolution, ij=mask)
+    return layer_config, camera_width, x_all, y_all
 
-    def read_image(self, path, target='I_nu', interp='nearest'):
-        #t0 = time() #####
-        self.layer_image_raw = [np.full((_r, _r), -1e8) for _r in self.layer_resolution]
-        #print(1, time() - t0) #####
-        result = np.nan_to_num(np.load(path)[target]) if isinstance(path, str) else path
-        #print(2, time() - t0) #####
-        self.layer_image_raw[0] = result[self.layer_cumn[0]:self.layer_cumn[1]].reshape(
-            (self.layer_resolution[0], self.layer_resolution[0]))
-        for i in range(1, self.n_layer):
-            self.layer_image_raw[i][tuple(self.band_config[f'layer_{i}'])] = result[
-                self.layer_cumn[i]:self.layer_cumn[i + 1]]
-        #print(3, time() - t0) #####
-        self.layer_image = [jnp.kron(self.layer_image_raw[i],
-                                     np.ones((self.image_resolution // self.layer_resolution[i],
-                                              self.image_resolution // self.layer_resolution[i])))
-                            for i in range(self.n_layer)]
-        if interp == 'nearest':
-            pass
-        elif interp == 'linear':
-            for i in range(1):
-                #print(31, time() - t0, self.image_resolution, self.layer_resolution[i]) #####
-                assert self.image_resolution // self.layer_resolution[i] > 1
-                self.layer_image[i] = uniform_filter(
-                    self.layer_image[i], self.image_resolution // self.layer_resolution[i],
-                    mode='nearest'
-                )
-            for i in range(1, self.n_layer - 1):
-                #print(32, time() - t0, self.image_resolution, self.layer_resolution[i]) #####
-                assert self.image_resolution // self.layer_resolution[i] > 1
-                self.layer_image[i] = uniform_filter(
-                    self.layer_image[i], self.image_resolution // self.layer_resolution[i],
-                    mode='constant', cval=-1e8
-                )
-        else:
+
+def merge_configs(layers):
+    layer_configs = [l[0] for l in layers]
+    pixel_configs = PixelConfig(layers[0][1], np.concatenate([l[2] for l in layers]),
+                                np.concatenate([l[3] for l in layers]))
+    return layer_configs, pixel_configs
+
+
+def save_configs(base_name, layer_configs, pixel_configs, max_pixels_per_run=520000):
+    with open(base_name + '.layer', 'wb') as _f:
+        pickle.dump(layer_configs, _f)
+        # np.savez(_f, layer_configs=layer_configs)
+    total_pixels = pixel_configs.x_all.shape[0]
+    i = 0
+    while i * max_pixels_per_run < total_pixels:
+        with open(base_name + f'.pixel.{i}', 'wb') as _f:
+            np.savez(
+                _f, camera_width=pixel_configs.camera_width,
+                x_all=pixel_configs.x_all[(i * max_pixels_per_run):((i + 1) * max_pixels_per_run)],
+                y_all=pixel_configs.y_all[(i * max_pixels_per_run):((i + 1) * max_pixels_per_run)]
+            )
+        i += 1
+
+
+def load_layers(base_name):
+    # layer_configs = np.load(base_name + '.layer')['layer_configs']
+    with open(base_name + '.layer', 'rb') as _f:
+        layer_configs = pickle.load(_f)
+    return layer_configs
+
+
+def load_pixels(base_name):
+    raise NotImplementedError
+
+
+def load_image(file, layer_configs, target='I_nu'):
+    if isinstance(file, np.ndarray):
+        pass
+    elif isinstance(file, str):
+        file = np.load(file)[target]
+    else:
+        file = np.concatenate([np.load(f)[target] for f in file])
+    file = np.nan_to_num(file).astype(np.float32)
+    i_cum = 0
+    # layer_img_all = []
+    central_img_all = []
+    layer_res_all = []
+    for l in layer_configs:
+        central_img_now = np.full((l.central_resolution, l.central_resolution), np.nan,
+                                  dtype=np.float32)
+        central_img_now[l.ij] = file[i_cum:(i_cum + l.ij[0].size)]
+        i_cum += l.ij[0].size
+        layer_res_now = l.central_resolution + 2 * l.padding_resolution
+        # layer_img_now = np.full((layer_res_now, layer_res_now), np.nan, dtype=np.float32)
+        # layer_img_now[
+        #     l.padding_resolution:(l.padding_resolution + l.central_resolution),
+        #     l.padding_resolution:(l.padding_resolution + l.central_resolution)
+        # ] = central_img
+        central_img_all.append(central_img_now)
+        layer_res_all.append(layer_res_now)
+        # layer_img_all.append(layer_img_now)
+    max_res = np.max(layer_res_all)
+    final_img = np.full((max_res, max_res), np.nan, dtype=np.float32)
+    for i_l in range(len(layer_res_all)):
+        if max_res % layer_res_all[i_l]:
             raise NotImplementedError
-        #print(4, time() - t0) #####
-        self.total_image = self.layer_image[-1]
-        for img in self.layer_image[::-1][1:]:
-            self.total_image = np.where(self.total_image >= 0., self.total_image, img)
-        assert np.all(self.total_image >= -0.01)
-        #print(5, time() - t0) #####
-        return np.clip(self.total_image, 0., np.inf)
+        n_zoom = max_res // layer_res_all[i_l]
+        if n_zoom > 1:
+            if not n_zoom % 2:
+                raise NotImplementedError
+            layer_img_now = np.full((central_img_all[i_l].shape[0] * n_zoom,
+                                     central_img_all[i_l].shape[1] * n_zoom), np.nan,
+                                    dtype=np.float32)
+            _zoom_layers(central_img_all[i_l], layer_img_now, central_img_all[i_l].shape[0],
+                         central_img_all[i_l].shape[1], n_zoom)
+        else:
+            layer_img_now = central_img_all[i_l]
+        _merge_layers(final_img, layer_img_now, layer_img_now.shape[0], layer_img_now.shape[1],
+                      layer_configs[i_l].padding_resolution * n_zoom,
+                      layer_configs[i_l].padding_resolution * n_zoom)
+    return final_img

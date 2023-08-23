@@ -1,6 +1,24 @@
-from setuptools import setup, find_packages
+from setuptools import setup, Extension, find_packages
+from Cython.Build import cythonize
+import numpy as np
+from extension_helpers import add_openmp_flags_if_available
 import warnings, os, subprocess
 from os import path
+
+
+ext_modules = [
+    Extension(
+        "hiring._allocation",
+        ["hiring/_allocation.pyx"],
+        include_dirs=[np.get_include()],
+        libraries=["m"],
+    ),
+]
+
+
+openmp_added = [add_openmp_flags_if_available(_) for _ in ext_modules]
+if not all(openmp_added):
+    warnings.warn('OpenMP check failed. Compiling without it for now.', RuntimeWarning)
 
 
 # from numpy/setup.py, which is distributed under BSD 3-Clause
@@ -53,5 +71,8 @@ setup(
     url='https://github.com/h3jia/hiring',
     license='Apache License, Version 2.0',
     python_requires=">=3.7",
-    install_requires=['jax>=0.3', 'numpy>=1.17', 'scipy'],
+    install_requires=['cython', 'extension-helpers', 'jax>=0.3', 'numpy>=1.17', 'scipy>=1.9'],
+    packages=find_packages(),
+    # package_data={'bayesfast': ['utils/new-joe-kuo-6.21201']},
+    ext_modules=cythonize(ext_modules, language_level="3"),
 )
