@@ -61,7 +61,8 @@ def r_proj(phi, spin, theta_o, deg=True):
     o_c = minimize_scalar(foo, bracket=[0, phi_p], bounds=[0, phi_p], method='bounded', args=(phi,))
     if not o_c.success:
         warnings.warn('minimize_scalar may be not converged.', RuntimeWarning)
-    return r_c(o_c.x, spin, theta_o, deg, 'r')
+    # return r_c(o_c.x, spin, theta_o, deg, 'r')
+    return -foo(o_c.x, phi)
 
 
 def d_proj(phi, spin, theta_o, deg=True):
