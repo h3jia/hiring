@@ -5,15 +5,17 @@ import numpy as np
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--blacklight_exe', type=str, help='absolute path to blacklight executable')
-parser.add_argument('--input_template', type=str, help='absolute path to the input template')
-parser.add_argument('--output_dir', type=str, help='absolute path to the output directory')
+parser.add_argument('--blacklight_exe', type=str, help='path to blacklight executable')
+parser.add_argument('--input_template', type=str, help='path to the input template')
+parser.add_argument('--output_dir', type=str, help='path to the output directory')
 parser.add_argument('--frame_iter', type=str, help='iterable specifying the frame indices')
 parser.add_argument('--index_format', type=str, default='{0:05d}',
                     help='formatting the indices under the output directory')
 parser.add_argument('--num_threads', type=int, default=1, help='number of threads per worker')
 parser.add_argument('--config_dir', type=str, default='', help='absolute path to the config files')
-parser.add_argument('--num_configs', type=int, default=1, help='number of configs')
+parser.add_argument('--num_configs', type=int, default=0, help='number of configs')
+parser.add_argument('--mdot_npz', type=str, default='', help='path to the npz of mdot')
+parser.add_argument('--rho_cgs', type=float, default=0., help='normalization of the density')
 parser.add_argument('--no_raytrace', action='store_true')
 args = parser.parse_args()
 
@@ -41,26 +43,48 @@ try:
 except FileExistsError:
     pass
 
+if args.mdot_npz == '':
+    mdot_npz = None
+else:
+    mdot_npz = np.load(args.mdot_npz)
+    assert args.rho_cgs > 0.
+
 for index in indices_local:
     index_format = args.index_format.format(index)
-    if args.num_configs > 1:
+    if args.num_configs >= 1:
         for i in range(args.num_configs):
             with open(args.input_template, 'r') as f_in:
                 with open(os.path.join(input_dir, index_format + f'.input.{i}'), 'w') as f_out:
-                    f_out.write(f_in.read().format(
-                        index,
-                        os.path.join(npz_dir, index_format + f'.npz.{i}'),
-                        args.num_threads,
-                        args.config_dir + f'.{i}'
-                    ))
+                    if mdot_npz is None:
+                        f_out.write(f_in.read().format(
+                            index,
+                            os.path.join(npz_dir, index_format + f'.npz.{i}'),
+                            args.num_threads,
+                            args.config_dir + f'.{i}'
+                        ))
+                    else:
+                        f_out.write(f_in.read().format(
+                            index,
+                            os.path.join(npz_dir, index_format + f'.npz.{i}'),
+                            args.num_threads,
+                            args.config_dir + f'.{i}',
+                            float(args.rho_cgs / mdot_npz[str(index)])
+                        ))
             if not args.no_raytrace:
                 os.system(args.blacklight_exe + ' ' +
                           os.path.join(input_dir, index_format + f'.input.{i}'))
-    elif args.num_configs == 1:
+    elif args.num_configs == 0:
         with open(args.input_template, 'r') as f_in:
             with open(os.path.join(input_dir, index_format + '.input'), 'w') as f_out:
-                f_out.write(f_in.read().format(index, os.path.join(npz_dir, index_format + '.npz'),
-                                               args.num_threads))
+                if mdot_npz is None:
+                    f_out.write(f_in.read().format(index,
+                                                   os.path.join(npz_dir, index_format + '.npz'),
+                                                   args.num_threads))
+                else:
+                    f_out.write(f_in.read().format(index,
+                                                   os.path.join(npz_dir, index_format + '.npz'),
+                                                   args.num_threads,
+                                                   float(args.rho_cgs / mdot_npz[str(index)])))
         if not args.no_raytrace:
             os.system(args.blacklight_exe + ' ' + os.path.join(input_dir, index_format + '.input'))
     else:
