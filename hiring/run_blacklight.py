@@ -1,6 +1,6 @@
 import argparse
 import os
-from mpi4py import MPI
+# from mpi4py import MPI
 import numpy as np
 
 
@@ -19,9 +19,11 @@ parser.add_argument('--rho_cgs', type=float, default=0., help='normalization of 
 parser.add_argument('--no_raytrace', action='store_true')
 args = parser.parse_args()
 
-comm = MPI.COMM_WORLD
-size = comm.Get_size()
-rank = comm.Get_rank()
+# comm = MPI.COMM_WORLD
+# size = comm.Get_size()
+# rank = comm.Get_rank()
+size = int(os.environ.get('SLURM_NTASKS'))
+rank = int(os.environ.get('SLURM_PROCID'))
 exec('indices = ' + args.frame_iter)
 indices = np.asarray(indices)
 num_indices = len(indices)
