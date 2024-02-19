@@ -7,8 +7,8 @@ from scipy.interpolate import RectBivariateSpline
 from scipy.interpolate import PchipInterpolator
 
 __all__ = ['linear_phi', 'linear_q', 'slice', 'phi_edge', 'Irrd', 'r_col_from_Irrd_one',
-           'M_from_Irrd_one', 'a_from_M', 'a_from_Irrd_one', 'a_from_Irrd', 'r_col_from_a',
-           'Vu']
+           'M_from_Irrd_one', 'a_from_M', 'a_from_Irrd_one', 'a_from_Irrd', 'A_phi_from_a',
+           'r_col_from_a', 'Vu']
 
 
 def linear_phi(n_phi=60):
@@ -214,7 +214,7 @@ def a_from_Irrd(Irrd, n=13, q=None):
                                         Irrd[i, 3, :, j]) for j in range(2)]
                        for i in range(Irrd.shape[0])])
 
-def _A_phi_one(u, a, n=None):
+def A_phi_from_a(u, a, n=None):
     assert len(a) >= 2
     if n is None:
         n = len(a) - 1
@@ -237,11 +237,11 @@ def r_col_from_a(a):
 #     return r_col_from_a(a_near) + r_col_from_a(a_far)
 
 def Vu(u, a_near, a_far=None, n=None, A=None, B=None):
-    A_near, phi_near = _A_phi_one(u, a_near, n)
+    A_near, phi_near = A_phi_from_a(u, a_near, n)
     if a_far is None:
         A_far, phi_far = A_near, phi_near
     else:
-        A_far, phi_far = _A_phi_one(u, a_far, n)
+        A_far, phi_far = A_phi_from_a(u, a_far, n)
     if A is None:
         A = (A_near**2 + A_far**2) / u
     if B is None:
