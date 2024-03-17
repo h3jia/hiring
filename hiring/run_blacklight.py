@@ -2,6 +2,7 @@ import argparse
 import os
 # from mpi4py import MPI
 import numpy as np
+import socket, warnings
 
 
 parser = argparse.ArgumentParser()
@@ -35,15 +36,22 @@ if rank < num_indices_extra:
     indices_local = indices_local + [indices[-(rank + 1)]]
 
 assert args.output_dir
+input_dir = os.path.join(args.output_dir, 'input')
+npz_dir =  os.path.join(args.output_dir, 'npz')
 try:
-    input_dir = os.path.join(args.output_dir, 'input')
-    npz_dir =  os.path.join(args.output_dir, 'npz')
     if not os.path.exists(input_dir):
         os.makedirs(input_dir)
+except (FileExistsError, FileNotFoundError) as e:
+    hostname = socket.gethostname()
+    warning_message = f"An error occurred: {e} on {hostname}."
+    warnings.warn(warning_message)
+try:
     if not os.path.exists(npz_dir):
         os.makedirs(npz_dir)
-except FileExistsError:
-    pass
+except (FileExistsError, FileNotFoundError) as e:
+    hostname = socket.gethostname()
+    warning_message = f"An error occurred: {e} on {hostname}."
+    warnings.warn(warning_message)
 
 if args.mdot_npz == '':
     mdot_npz = None
