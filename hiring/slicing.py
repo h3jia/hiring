@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.integrate import simpson
+from scipy.integrate import simpson, trapezoid
 from scipy.special import factorial
 from scipy.signal import find_peaks
 from scipy.interpolate import CubicSpline
@@ -14,15 +14,17 @@ __all__ = ['linear_phi', 'linear_q', 'slice', 'phi_edge', 'Irrd', 'r_col_from_Ir
 def linear_phi(n_phi=60):
     return np.linspace(0., 2. * np.pi, n_phi + 1, endpoint=True)
 
-def linear_q(n_q_base=101, dq_edge_boost=(10, 5, 2)):
+def linear_q(n_q_base=101, dq_edge_boost=(10, 5, 2), endpoint=False):
     q_base = np.linspace(0., 1., n_q_base, endpoint=True)
     q_all = []
+    if endpoint:
+        q_all.append(q_base[:1])
     for i in range(len(dq_edge_boost)):
         q_all.append(np.linspace(q_base[i], q_base[i + 1], dq_edge_boost[i] + 1)[1:])
     q_all.append(q_base[(len(dq_edge_boost) + 1):-len(dq_edge_boost)])
     for i in range(len(dq_edge_boost))[::-1]:
         q_all.append(np.linspace(q_base[-i - 2], q_base[-i - 1], dq_edge_boost[i] + 1)[1:])
-    return np.concatenate(q_all)[:-1]
+    return np.concatenate(q_all) if endpoint else np.concatenate(q_all)[:-1]
 
 def slice(img, x, y, phi=None, q=None, r_in=None, r_out=None, dr=0.005, k_interp=1,
           origin=(0., 0.)):
@@ -82,37 +84,73 @@ def phi_edge(slice, phi_obs, phi=None):
     proj = (slice[:, 0] * np.cos(phi)[None, :, None] * np.cos(phi_obs) +
             slice[:, 0] * np.sin(phi)[None, :, None] * np.sin(phi_obs))
     proj[:, -1] = proj[:, 0] # avoid numerical issues
-    phi_edge_interp = CubicSpline(phi, proj, axis=1, bc_type='periodic',
-                                  extrapolate=False).derivative(1).solve()
+    phi_edge_interp = CubicSpline(phi, proj, axis=1, bc_type='periodic').derivative(1).solve()
     # (# of img, # of q, near or far)
     return np.array([[_choose_root(__, phi_obs) for __ in _] for _ in phi_edge_interp])
 
-def Irrd(slice, phi_edge, phi_obs, phi=None, q=None):
+def Irrd(slice, phi_edge, phi_obs, phi=None, q=None, periodic=True):
     slice = _check_slice(slice) # (# of img, r or I, # of phi, # of q)
     phi_edge = np.asarray(phi_edge) # (# of img, # of q, near or far)
     phi = linear_phi() if phi is None else np.asarray(phi)
     q = linear_q() if q is None else np.asarray(q)
 
-    r_interp = [RectBivariateSpline(phi, q, _, bbox=[0., 2. * np.pi, 0., 1.]) for _ in slice[:, 0]]
-    I_interp = [RectBivariateSpline(phi, q, _, bbox=[0., 2. * np.pi, 0., 1.]) for _ in slice[:, 1]]
-    rI_interp = [r_interp, I_interp]
+    if periodic:
+        r_interp = [[CubicSpline(phi, slice[i, 0, :, j], bc_type='periodic') for j in
+                     range(slice.shape[3])] for i in range(slice.shape[0])]
+        I_interp = [[CubicSpline(phi, slice[i, 1, :, j], bc_type='periodic') for j in
+                     range(slice.shape[3])] for i in range(slice.shape[0])]
+        rI_interp = [r_interp, I_interp] # (r or I; # of img; # of q)
 
-    r_edge = np.array([rI_interp[0][i].ev(phi_edge[i], q[:, None]) for i in range(slice.shape[0])])
-    dr_dphi_edge = np.array([rI_interp[0][i].ev(phi_edge[i], q[:, None], dx=1) for i in
-                             range(slice.shape[0])])
-    dr2_dphi2_edge = np.array([rI_interp[0][i].ev(phi_edge[i], q[:, None], dx=2) for i in
-                               range(slice.shape[0])])
-    
-    r_curv = (r_edge**2 + dr_dphi_edge**2)**1.5 / np.abs(r_edge**2 + 2. * dr_dphi_edge**2 -
-                                                         r_edge * dr2_dphi2_edge)
-    I_edge = np.array([rI_interp[1][i].ev(phi_edge[i], q[:, None]) for i in range(slice.shape[0])])
-    r_proj = np.abs(r_edge * np.cos(phi_edge) * np.cos(phi_obs) +
-                    r_edge * np.sin(phi_edge) * np.sin(phi_obs))
-    dr_dq_cosdphi = np.array([rI_interp[0][i].ev(phi_edge[i], q[:, None], dy=1) for i in
-                              range(slice.shape[0])])
-    dr_dq_cosdphi = dr_dq_cosdphi * np.cos(phi_edge - np.array([phi_obs, phi_obs + np.pi]))
-    # (# of img, 4, # of q, near or far)
-    return np.moveaxis((I_edge, r_proj, r_curv, dr_dq_cosdphi), 0, 1)
+        r_edge = np.array([[rI_interp[0][i][j](phi_edge[i][j]) for j in range(slice.shape[3])]
+                           for i in range(slice.shape[0])])
+        dr_dphi_edge = np.array([[rI_interp[0][i][j](phi_edge[i][j], 1) for j in
+                                  range(slice.shape[3])] for i in range(slice.shape[0])])
+        dr2_dphi2_edge = np.array([[rI_interp[0][i][j](phi_edge[i][j], 2) for j in
+                                    range(slice.shape[3])] for i in range(slice.shape[0])])
+
+        r_curv = (r_edge**2 + dr_dphi_edge**2)**1.5 / np.abs(r_edge**2 + 2. * dr_dphi_edge**2 -
+                                                             r_edge * dr2_dphi2_edge)
+        I_edge = np.array([[rI_interp[1][i][j](phi_edge[i][j]) for j in range(slice.shape[3])]
+                           for i in range(slice.shape[0])])
+        r_proj = np.abs(r_edge * np.cos(phi_edge) * np.cos(phi_obs) +
+                        r_edge * np.sin(phi_edge) * np.sin(phi_obs))
+
+        r_q_edge = np.moveaxis([[[rI_interp[0][i][k](phi_edge[i][j]) for k in range(slice.shape[3])]
+                                 for j in range(slice.shape[3])] for i in range(slice.shape[0])],
+                               2, 3)
+        # (# of img, # of q, near or far, # of q)
+        dr_dq = np.array([[[CubicSpline(q, r_q_edge[i, j, k])(q[j], 1) for k in range(2)] for j in
+                           range(r_q_edge.shape[1])] for i in range(r_q_edge.shape[0])])
+        dr_dq_cosdphi = dr_dq * np.cos(phi_edge - np.array([phi_obs, phi_obs + np.pi]))
+
+        # (# of img, 4, # of q, near or far)
+        return np.moveaxis((I_edge, r_proj, r_curv, dr_dq_cosdphi), 0, 1)
+
+    else:
+        r_interp = [RectBivariateSpline(phi, q, _, bbox=[0., 2. * np.pi, 0., 1.]) for _ in
+                    slice[:, 0]]
+        I_interp = [RectBivariateSpline(phi, q, _, bbox=[0., 2. * np.pi, 0., 1.]) for _ in
+                    slice[:, 1]]
+        rI_interp = [r_interp, I_interp]
+
+        r_edge = np.array([rI_interp[0][i].ev(phi_edge[i], q[:, None]) for i in
+                           range(slice.shape[0])])
+        dr_dphi_edge = np.array([rI_interp[0][i].ev(phi_edge[i], q[:, None], dx=1) for i in
+                                 range(slice.shape[0])])
+        dr2_dphi2_edge = np.array([rI_interp[0][i].ev(phi_edge[i], q[:, None], dx=2) for i in
+                                   range(slice.shape[0])])
+
+        r_curv = (r_edge**2 + dr_dphi_edge**2)**1.5 / np.abs(r_edge**2 + 2. * dr_dphi_edge**2 -
+                                                             r_edge * dr2_dphi2_edge)
+        I_edge = np.array([rI_interp[1][i].ev(phi_edge[i], q[:, None]) for i in
+                           range(slice.shape[0])])
+        r_proj = np.abs(r_edge * np.cos(phi_edge) * np.cos(phi_obs) +
+                        r_edge * np.sin(phi_edge) * np.sin(phi_obs))
+        dr_dq_cosdphi = np.array([rI_interp[0][i].ev(phi_edge[i], q[:, None], dy=1) for i in
+                                  range(slice.shape[0])])
+        dr_dq_cosdphi = dr_dq_cosdphi * np.cos(phi_edge - np.array([phi_obs, phi_obs + np.pi]))
+        # (# of img, 4, # of q, near or far)
+        return np.moveaxis((I_edge, r_proj, r_curv, dr_dq_cosdphi), 0, 1)
 
 def r_col_from_Irrd_one(I_edge, r_proj, r_curv, q=None, dr_dq_cosdphi=None):
     if q is None:
@@ -175,7 +213,7 @@ def _a_from_M(M, i):
             return (-M[2]**4 * M[3] + M[0] * M[2]**3 * M[5] +
                     M[0] * M[2]**2 * (3. * M[3] * M[4] - M[0] * M[7]) +
                     M[0] * M[2] * (M[3]**3 - 2 * M[0] * M[3] * M[6] +
-                                   M[0] * (-2. * M[4] * M[5] + M[0] * M[9])) + 
+                                   M[0] * (-2. * M[4] * M[5] + M[0] * M[9])) +
                     M[0]**2 * (-M[3]**2 * M[5] + M[3] * (-M[4]**2 + M[0] * M[8]) +
                                M[0] * (M[5] * M[6] + M[4] * M[7] - M[0] * M[11]))) / M[0]**5
         case 12:
