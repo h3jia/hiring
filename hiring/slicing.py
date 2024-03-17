@@ -14,7 +14,7 @@ __all__ = ['linear_phi', 'linear_q', 'slice', 'phi_edge', 'Irrd', 'r_col_from_Ir
 def linear_phi(n_phi=60):
     return np.linspace(0., 2. * np.pi, n_phi + 1, endpoint=True)
 
-def linear_q(n_q_base=101, dq_edge_boost=(10, 5, 2), endpoint=False):
+def linear_q(n_q_base=101, dq_edge_boost=(10, 5, 2), endpoint=False, clip=1e-6):
     q_base = np.linspace(0., 1., n_q_base, endpoint=True)
     q_all = []
     if endpoint:
@@ -24,7 +24,10 @@ def linear_q(n_q_base=101, dq_edge_boost=(10, 5, 2), endpoint=False):
     q_all.append(q_base[(len(dq_edge_boost) + 1):-len(dq_edge_boost)])
     for i in range(len(dq_edge_boost))[::-1]:
         q_all.append(np.linspace(q_base[-i - 2], q_base[-i - 1], dq_edge_boost[i] + 1)[1:])
-    return np.concatenate(q_all) if endpoint else np.concatenate(q_all)[:-1]
+    q_all = np.concatenate(q_all) if endpoint else np.concatenate(q_all)[:-1]
+    if clip is not None and 0 < clip < 0.5:
+        q_all = np.clip(q_all, clip, 1. - clip)
+    return q_all
 
 def slice(img, x, y, phi=None, q=None, r_in=None, r_out=None, dr=0.005, k_interp=1,
           origin=(0., 0.)):
