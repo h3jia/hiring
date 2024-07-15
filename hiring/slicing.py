@@ -65,6 +65,7 @@ def slice(img, x, y, phi=None, q=None, r_in=None, r_out=None, dr=0.005, k_interp
     return np.array([r_all, I_all]) # (r or I, # of phi, # of q)
 
 def _choose_root(roots, phi_obs):
+    roots = roots[np.where((0. <= roots) * (roots <= 2 * np.pi))]
     delta = (roots - phi_obs) % (2 * np.pi)
     delta = np.where(delta > np.pi, delta - 2 * np.pi, delta)
     return np.array([roots[np.argmin(np.abs(delta))],
