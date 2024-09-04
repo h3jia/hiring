@@ -2,10 +2,11 @@ import numpy as np
 from collections import OrderedDict, namedtuple
 import pickle
 from .lensing_bands import *
-from ._allocation import _set_mask, _merge_layers, _zoom_layers
+from ._allocation import _set_mask, _merge_layers, _zoom_layers, _rotate_image
 
 __all__ = ['LayerConfig', 'PixelConfig', 'get_lensing_band_layer', 'get_square_layer',
-           'merge_configs', 'save_configs', 'load_layers', 'load_pixels', 'load_image']
+           'merge_configs', 'save_configs', 'load_layers', 'load_pixels', 'load_image',
+           'rotate_image', 'proj_image']
 
 
 LayerConfig = namedtuple('LayerConfig', ['padding_resolution', 'central_resolution', 'ij'])
@@ -34,15 +35,14 @@ def get_lensing_band_layer(camera_width, layer_resolution, n, outer_width=None, 
 
     dx = central_width / central_resolution
     _x_1d_all = np.arange(-central_width / 2 + dx / 2, central_width / 2 + dx / 2.01, dx)
-    _x_all, _y_all = np.meshgrid(_x_1d_all, _x_1d_all)
+    _x_all, _y_all = np.meshgrid(_x_1d_all, _x_1d_all) # shape: (n_y, n_x)
 
     _mask = np.full_like(_x_all, 0, dtype=np.int8)
     phi_all = np.linspace(0., 360., n_phi)
     r_all = np.array([r_b(p, spin, theta_o, theta_d, n) for p in phi_all])
     r_in_all = r_all[:, 0].copy() - f_exp * dx
     r_out_all = r_all[:, 1].copy() + f_exp * dx
-    _set_mask(_mask, _x_all, _y_all, r_in_all, r_out_all, _x_all.shape[0], _x_all.shape[1],
-              n_phi, 1)
+    _set_mask(_mask, _x_all, _y_all, r_in_all, r_out_all, _x_all.shape[0], n_phi, 1)
     mask = np.where(_mask)
 
     x_all = _x_all[mask]
@@ -92,8 +92,7 @@ def get_square_layer(camera_width, layer_resolution, inner_width=None, outer_wid
         r_all = np.array([r_b(p, spin, theta_o, theta_d, 1) for p in phi_all])
         r_in_all = r_all[:, 0].copy() + f_exp * dx
         r_out_all = r_all[:, 1].copy() - f_exp * dx
-        _set_mask(_mask, _x_all, _y_all, r_in_all, r_out_all, _x_all.shape[0], _x_all.shape[1],
-                  n_phi, 0)
+        _set_mask(_mask, _x_all, _y_all, r_in_all, r_out_all, _x_all.shape[0], n_phi, 0)
     mask = np.where(_mask)
 
     x_all = _x_all[mask]
@@ -176,10 +175,25 @@ def load_image(file, layer_configs, target='I_nu'):
                                      central_img_all[i_l].shape[1] * n_zoom), np.nan,
                                     dtype=np.float32)
             _zoom_layers(central_img_all[i_l], layer_img_now, central_img_all[i_l].shape[0],
-                         central_img_all[i_l].shape[1], n_zoom)
+                         n_zoom)
         else:
             layer_img_now = central_img_all[i_l]
-        _merge_layers(final_img, layer_img_now, layer_img_now.shape[0], layer_img_now.shape[1],
-                      layer_configs[i_l].padding_resolution * n_zoom,
+        _merge_layers(final_img, layer_img_now, layer_img_now.shape[0],
                       layer_configs[i_l].padding_resolution * n_zoom)
     return final_img
+
+
+def rotate_image(image, angle=0., circle_mask=True):
+    image = np.ascontiguousarray(image, dtype=np.float32)
+    assert image.ndim == 2
+    if not (image.shape[0] == image.shape[1]):
+        raise NotImplementedError
+
+    output = np.full_like(image, np.nan)
+    _rotate_image(image, output, image.shape[0], angle, int(circle_mask))
+    return output
+
+
+def proj_image(image, angle=0., circle_mask=True):
+    image = rotate_image(image, angle, circle_mask)
+    return np.mean(image, axis=0)
