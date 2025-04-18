@@ -163,8 +163,8 @@ def _rotate_image(const float[:, ::1] image, float[:, ::1] output, int n_xy, flo
             for i in prange(n_xy, nogil=True, schedule='static'):
                 for j in range(n_xy):
                     if ((j - c_xy)**2 + (i - c_xy)**2) <= r_square:  # inside the circle mask
-                        x_rot[i * n_xy + j] = cos_a * (j - c_xy) + sin_a * (i - c_xy) + c_xy
-                        y_rot[i * n_xy + j] = -sin_a * (j - c_xy) + cos_a * (i - c_xy) + c_xy
+                        x_rot[i * n_xy + j] = cos_a * (j - c_xy) - sin_a * (i - c_xy) + c_xy
+                        y_rot[i * n_xy + j] = sin_a * (j - c_xy) + cos_a * (i - c_xy) + c_xy
                         x_orig[i * n_xy + j] = int(floorf(x_rot[i * n_xy + j]))
                         y_orig[i * n_xy + j] = int(floorf(y_rot[i * n_xy + j]))
                         output[i, j] = (
@@ -190,8 +190,8 @@ def _rotate_image(const float[:, ::1] image, float[:, ::1] output, int n_xy, flo
         elif angle and (not circle_mask):
             for i in prange(n_xy, nogil=True, schedule='static'):
                 for j in range(n_xy):
-                    x_rot[i * n_xy + j] = cos_a * (j - c_xy) + sin_a * (i - c_xy) + c_xy
-                    y_rot[i * n_xy + j] = -sin_a * (j - c_xy) + cos_a * (i - c_xy) + c_xy
+                    x_rot[i * n_xy + j] = cos_a * (j - c_xy) - sin_a * (i - c_xy) + c_xy
+                    y_rot[i * n_xy + j] = sin_a * (j - c_xy) + cos_a * (i - c_xy) + c_xy
                     if ((0. <= x_rot[i * n_xy + j] <= (n_xy - 1.)) and
                         (0. <= y_rot[i * n_xy + j] <= (n_xy - 1.))):
                         x_orig[i * n_xy + j] = int(floorf(x_rot[i * n_xy + j]))
